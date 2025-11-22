@@ -5,35 +5,40 @@ set -euo pipefail
 # SYS-BACKUP-V5 – BACKUP SCRIPT
 ############################################################
 
-TIMESTAMP="$(date +%Y-%m-%d_%H-%M-%S)"
-BACKUP_NAME="backup_${TIMESTAMP}"
-
+CONFIG="/etc/sys-backup-v5.conf"
 BASE="/opt/sys-backup-v5"
 LOG_DIR="/var/log/sys-backup-v5"
 TMP_BASE="/tmp/sys-backup-v5"
-BACKUP_TMP="${TMP_BASE}/${BACKUP_NAME}"
-
-REMOTE_NAME="backup"
-REMOTE_DIR="Server-Backups/${BACKUP_NAME}"
 
 mkdir -p "$LOG_DIR"
+mkdir -p "$TMP_BASE"
+
+if [[ -f "$CONFIG" ]]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG"
+fi
+
+REMOTE_NAME="${REMOTE_NAME:-backup}"
+REMOTE_DIR_BASE="${REMOTE_DIR:-Server-Backups}"
+
+TIMESTAMP="$(date +%Y-%m-%d_%H-%M-%S)"
+BACKUP_NAME="backup_${TIMESTAMP}"
+
+BACKUP_TMP="${TMP_BASE}/${BACKUP_NAME}"
+REMOTE_DIR="${REMOTE_DIR_BASE}/${BACKUP_NAME}"
+
 mkdir -p "$BACKUP_TMP/volumes"
 mkdir -p "$BACKUP_TMP/bind_mounts"
 
 LOG="${LOG_DIR}/backup.log"
 
-TELEGRAM_HELPER="${BASE}/bin/telegram.sh"
-
-notify() {
-  if [[ -x "$TELEGRAM_HELPER" ]]; then
-    "$TELEGRAM_HELPER" "$1" || true
-  fi
+telegram() {
+    if [[ -x "${BASE}/bin/telegram.sh" ]]; then
+        "${BASE}/bin/telegram.sh" "$*"
+    fi
 }
 
-on_error() {
-  notify "❌ *Backup fehlgeschlagen* auf \`$(hostname)\` (Zeile $1)."
-}
-trap 'on_error $LINENO' ERR
+trap 'telegram "❌ Backup fehlgeschlagen auf $(hostname) um $(date)"' ERR
 
 echo "--------------------------------------------------------" | tee "$LOG"
 echo "SYS-BACKUP-V5 BACKUP gestartet: ${TIMESTAMP}" | tee -a "$LOG"
@@ -41,7 +46,7 @@ echo "--------------------------------------------------------" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 
 ############################################################
-# 1) MODEL-LISTEN (keine Model-Daten!)
+# 1) MODEL-LISTEN (nur Info, keine Modelldaten)
 ############################################################
 
 echo "Erfasse Modell-Listen..." | tee -a "$LOG"
@@ -66,18 +71,21 @@ echo "Starte Volume-Backup..." | tee -a "$LOG"
 
 VOLUMES=$(docker volume ls --format '{{.Name}}' | grep '^services_' || true)
 
-mkdir -p "$BACKUP_TMP/volumes"
+if [[ -z "$VOLUMES" ]]; then
+    echo "Keine passenden Docker-Volumes gefunden (services_*)." | tee -a "$LOG"
+else
+    for VOL in $VOLUMES; do
+        echo "  Volume: $VOL" | tee -a "$LOG"
+        ARCHIVE="${BACKUP_TMP}/volumes/${VOL}.tar.gz"
 
-for VOL in $VOLUMES; do
-    echo "  Volume: $VOL" | tee -a "$LOG"
+        docker run --rm \
+            -v "${VOL}:/data:ro" \
+            -v "${BACKUP_TMP}/volumes:/out" \
+            alpine sh -c "cd /data && tar -czf /out/${VOL}.tar.gz ."
 
-    docker run --rm \
-        -v "${VOL}:/data:ro" \
-        -v "${BACKUP_TMP}/volumes:/out" \
-        alpine sh -c "cd /data && tar -czf /out/${VOL}.tar.gz ."
-
-    echo "    ✔ Gesichert: ${BACKUP_TMP}/volumes/${VOL}.tar.gz" | tee -a "$LOG"
-done
+        echo "    ✔ Gesichert: $ARCHIVE" | tee -a "$LOG"
+    done
+fi
 
 ############################################################
 # 3) BIND-MOUNT BACKUP
@@ -94,8 +102,8 @@ MOUNTS=(
 )
 
 for SRC in "${MOUNTS[@]}"; do
-    if [[ ! -d "$SRC" && ! -f "$SRC" ]]; then
-        echo "  ⚠️ Übersprungen (nicht vorhanden): $SRC" | tee -a "$LOG"
+    if [[ ! -d "$SRC" ]]; then
+        echo "  Überspringe (nicht vorhanden): $SRC" | tee -a "$LOG"
         continue
     fi
 
@@ -104,7 +112,6 @@ for SRC in "${MOUNTS[@]}"; do
 
     echo "  Bind-Mount: $SRC" | tee -a "$LOG"
 
-    mkdir -p "$(dirname "$ARCHIVE")"
     tar -czf "$ARCHIVE" -C "$SRC" .
 
     echo "    ✔ Gesichert: $ARCHIVE" | tee -a "$LOG"
@@ -159,6 +166,4 @@ echo "Name: ${BACKUP_NAME}" | tee -a "$LOG"
 echo "Remote: ${REMOTE_NAME}:${REMOTE_DIR}" | tee -a "$LOG"
 echo "--------------------------------------------------------" | tee -a "$LOG"
 
-notify "✅ *Backup erfolgreich* auf \`$(hostname)\`  
-Name: \`${BACKUP_NAME}\`  
-Remote: \`${REMOTE_NAME}:${REMOTE_DIR}\`"
+telegram "✅ Backup erfolgreich auf $(hostname) – ${BACKUP_NAME}"
