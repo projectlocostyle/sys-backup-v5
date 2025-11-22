@@ -10,7 +10,7 @@ LOG_DIR="/var/log/sys-backup-v5"
 SERVICES_DIR="/opt/services"
 COMPOSE_FILE="${SERVICES_DIR}/docker-compose.yml"
 
-# Nextcloud / rclone Defaults (kannst du bei Bedarf hier ändern)
+# Nextcloud Defaults
 NC_URL_DEFAULT="https://nextcloud.r-server.ch/remote.php/dav/files/backup/"
 NC_USER_DEFAULT="backup"
 REMOTE_NAME_DEFAULT="backup"
@@ -28,7 +28,6 @@ echo ">>> Basis-Konfiguration (Wizard)"
 read -p "Base-Domain (z.B. ai.locostyle.ch): " BASE_DOMAIN
 BASE_DOMAIN="${BASE_DOMAIN:-ai.locostyle.ch}"
 
-# Nextcloud-Remote (wir lassen URL/User voreingestellt)
 echo ""
 echo "Nextcloud / rclone:"
 read -p "Nextcloud URL [${NC_URL_DEFAULT}]: " NC_URL
@@ -47,7 +46,6 @@ echo ""
 read -s -p "Nextcloud Passwort: " NC_PASS
 echo ""
 
-# Telegram Wizard
 echo ""
 echo "Telegram-Benachrichtigungen?"
 read -p "Aktivieren? (y/N): " TG_EN
@@ -64,10 +62,8 @@ else
     TELEGRAM_BOT_TOKEN=""
 fi
 
-# N8N Encryption Key generieren
 if command -v openssl >/dev/null 2>&1; then
-    N8N_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-else
+    N8N_ENCRYPTION_KEY="$(openssl rand -hex 32)"\else
     N8N_ENCRYPTION_KEY="$(head -c 32 /dev/urandom | base64)"
 fi
 
@@ -81,24 +77,18 @@ OPENWEBUI_DOMAIN="openwebui.${BASE_DOMAIN}"
 ############################################
 
 cat > "$CONFIG" <<EOF
-# SYS-BACKUP-V5 zentrale Konfiguration
-
 BASE_DOMAIN="$BASE_DOMAIN"
-
 N8N_DOMAIN="$N8N_DOMAIN"
 PORTAINER_DOMAIN="$PORTAINER_DOMAIN"
 OLLAMA_DOMAIN="$OLLAMA_DOMAIN"
 OPENWEBUI_DOMAIN="$OPENWEBUI_DOMAIN"
-
 REMOTE_NAME="$REMOTE_NAME"
 REMOTE_DIR="$REMOTE_BACKUP_DIR"
 NC_URL="$NC_URL"
 NC_USER="$NC_USER"
-
 TELEGRAM_ENABLED="$TELEGRAM_ENABLED"
 TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
 TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
-
 N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY"
 EOF
 
@@ -109,8 +99,6 @@ echo "✔ Konfiguration geschrieben nach: $CONFIG"
 ### 3) SYSTEM UPDATES & TOOLS
 ############################################
 
-echo ""
-echo "[1/5] System aktualisieren & Tools installieren..."
 apt update -y
 apt install -y curl git unzip ca-certificates gnupg lsb-release rclone
 
@@ -118,47 +106,28 @@ apt install -y curl git unzip ca-certificates gnupg lsb-release rclone
 ### 4) DOCKER & DOCKER COMPOSE
 ############################################
 
-echo ""
 echo "[2/5] Docker prüfen..."
 if ! command -v docker &> /dev/null; then
-    echo "❌ Docker nicht gefunden – Installation..."
     curl -fsSL https://get.docker.com | sh
-else
-    echo "✔ Docker ist bereits installiert."
 fi
 
-echo ""
 echo "[3/5] docker compose prüfen..."
 if ! docker compose version &> /dev/null; then
-    echo "❌ docker compose fehlt – Installation docker-compose (Standalone)..."
-    LATEST_COMPOSE=$(curl -s https://api.github.com/repos/docker/compose/releases/latest \
-        | grep browser_download_url | grep linux-x86_64 | cut -d '"' -f 4)
+    LATEST_COMPOSE=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep browser_download_url | grep linux-x86_64 | cut -d '"' -f 4)
     curl -L "$LATEST_COMPOSE" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
-else
-    echo "✔ docker compose ist verfügbar."
 fi
 
 ############################################
 ### 5) CADDY INSTALLATION
 ############################################
 
-echo ""
-echo "[4/5] Caddy installieren..."
-
 if ! command -v caddy &> /dev/null; then
     apt install -y debian-keyring debian-archive-keyring apt-transport-https
-
-    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
-        | gpg --dearmor -o /usr/share/keyrings/caddy.gpg
-
-    echo "deb [signed-by=/usr/share/keyrings/caddy.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
-        > /etc/apt/sources.list.d/caddy.list
-
+    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy.gpg
+    echo "deb [signed-by=/usr/share/keyrings/caddy.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy.list
     apt update
     apt install -y caddy
-else
-    echo "✔ Caddy ist bereits installiert."
 fi
 
 systemctl enable caddy
@@ -168,41 +137,20 @@ systemctl restart caddy
 ### 6) RCLONE REMOTE EINRICHTEN
 ############################################
 
-echo ""
-echo "[5/5] rclone Remote '${REMOTE_NAME}' einrichten..."
-
-if rclone listremotes | grep -q "^${REMOTE_NAME}:"; then
-    echo "✔ Remote '${REMOTE_NAME}' existiert bereits."
-else
-    rclone config create "${REMOTE_NAME}" webdav \
-        url="${NC_URL}" \
-        vendor="nextcloud" \
-        user="${NC_USER}" \
-        pass="${NC_PASS}" \
-        --non-interactive
-
-    echo "✔ Remote '${REMOTE_NAME}' wurde erstellt."
+if ! rclone listremotes | grep -q "^${REMOTE_NAME}:"; then
+    rclone config create "$REMOTE_NAME" webdav url="$NC_URL" vendor="nextcloud" user="$NC_USER" pass="$NC_PASS" --non-interactive
 fi
 
-echo "Teste Nextcloud-Verbindung..."
-
+# Verbindung testen
 if ! rclone ls "${REMOTE_NAME}:${REMOTE_BACKUP_DIR}" >/dev/null 2>&1; then
-    echo "⚠ Ordner '${REMOTE_BACKUP_DIR}' existiert nicht – wird erzeugt..."
     rclone mkdir "${REMOTE_NAME}:${REMOTE_BACKUP_DIR}"
-else
-    echo "✔ Nextcloud erreichbar."
 fi
 
 ############################################
-### 7) DOCKER-COMPOSE ANLEGEN
+### 7) DOCKER-COMPOSE
 ############################################
-
-echo ""
-echo "Erzeuge Docker-Umgebung unter ${SERVICES_DIR}..."
 
 mkdir -p "$SERVICES_DIR"
-
-# Config laden für Variablen
 . "$CONFIG"
 
 cat > "$COMPOSE_FILE" <<EOF
@@ -257,19 +205,13 @@ services:
 
 volumes:
   services_portainer_data:
-    name: services_portainer_data
   services_openwebui_data:
-    name: services_openwebui_data
   services_n8n_data:
-    name: services_n8n_data
   services_ollama_data:
-    name: services_ollama_data
 EOF
 
-echo "✔ docker-compose.yml erstellt: $COMPOSE_FILE"
-
 ############################################
-### 8) CADDYFILE ERZEUGEN
+### 8) CADDYFILE
 ############################################
 
 cat > /etc/caddy/Caddyfile <<EOF
@@ -306,10 +248,33 @@ systemctl reload caddy || systemctl restart caddy
 
 docker compose -f "$COMPOSE_FILE" up -d
 
+############################################
+### 10) TELEGRAM
+############################################
+
+if [[ "$TELEGRAM_ENABLED" == "yes" ]]; then
+    MESSAGE="$(cat <<EOF
+🚀 *SYS-BACKUP-V5 Installation abgeschlossen*
+
+🖥 Server: $(hostname)
+🌐 Domain: ${BASE_DOMAIN}
+📦 Dienste installiert:
+ - Portainer
+ - OpenWebUI
+ - N8N
+ - Ollama
+ - Watchtower
+
+📅 Zeitpunkt: $(date '+%d.%m.%Y %H:%M:%S')
+EOF
+)"
+
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+         -d chat_id="${TELEGRAM_CHAT_ID}" \
+         -d parse_mode="Markdown" \
+         -d text="${MESSAGE}" >/dev/null
+fi
+
 echo "===================================================="
 echo " Installation abgeschlossen!"
 echo "===================================================="
-
-if [[ "$TELEGRAM_ENABLED" == "yes" ]]; then
-    /opt/sys-backup-v5/bin/telegram.sh "✅ SYS-BACKUP-V5 installiert auf $(hostname) – Domain: ${BASE_DOMAIN}"
-fi
