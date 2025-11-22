@@ -1,46 +1,98 @@
 #!/bin/bash
 set -euo pipefail
 
-source /opt/sys-backup-v5/bin/telegram.sh
+############################################################
+# SYS-BACKUP-V5 – BACKUP SCRIPT
+############################################################
 
-START=$(date +%s)
-
-TS=$(date +%Y-%m-%d_%H-%M-%S)
-NAME="backup_${TS}"
-
+CONFIG="/etc/sys-backup-v5.conf"
 BASE="/opt/sys-backup-v5"
-TMP="/tmp/sys-backup-v5/${NAME}"
-LOG="/var/log/sys-backup-v5/backup.log"
+LOG_DIR="/var/log/sys-backup-v5"
+TMP_BASE="/tmp/sys-backup-v5"
 
-REMOTE="backup"
-RDIR="Server-Backups/${NAME}"
+mkdir -p "$LOG_DIR"
+mkdir -p "$TMP_BASE"
 
-mkdir -p "$TMP/volumes"
-mkdir -p "$TMP/bind_mounts"
+if [[ -f "$CONFIG" ]]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG"
+fi
 
-echo "Backup gestartet: $TS" | tee "$LOG"
+REMOTE_NAME="${REMOTE_NAME:-backup}"
+REMOTE_DIR_BASE="${REMOTE_DIR:-Server-Backups}"
 
-#################################
-### 1) Modelle
-#################################
-echo "models:" > "${TMP}/model_manifest.yml"
-echo "  ollama: Docker-Modus" >> "${TMP}/model_manifest.yml"
+TIMESTAMP="$(date +%Y-%m-%d_%H-%M-%S)"
+BACKUP_NAME="backup_${TIMESTAMP}"
 
-#################################
-### 2) Docker-Volumes
-#################################
-VOLUMES=$(docker volume ls --format '{{.Name}}' | grep '^services_')
+BACKUP_TMP="${TMP_BASE}/${BACKUP_NAME}"
+REMOTE_DIR="${REMOTE_DIR_BASE}/${BACKUP_NAME}"
 
-for VOL in $VOLUMES; do
-    docker run --rm \
-        -v "${VOL}:/data:ro" \
-        -v "${TMP}/volumes:/out" \
-        alpine sh -c "cd /data && tar -czf /out/${VOL}.tar.gz ."
-done
+mkdir -p "$BACKUP_TMP/volumes"
+mkdir -p "$BACKUP_TMP/bind_mounts"
 
-#################################
-### 3) Bind Mounts
-#################################
+LOG="${LOG_DIR}/backup.log"
+
+telegram() {
+    if [[ -x "${BASE}/bin/telegram.sh" ]]; then
+        "${BASE}/bin/telegram.sh" "$*"
+    fi
+}
+
+trap 'telegram "❌ Backup fehlgeschlagen auf $(hostname) um $(date)"' ERR
+
+echo "--------------------------------------------------------" | tee "$LOG"
+echo "SYS-BACKUP-V5 BACKUP gestartet: ${TIMESTAMP}" | tee -a "$LOG"
+echo "--------------------------------------------------------" | tee -a "$LOG"
+echo "" | tee -a "$LOG"
+
+############################################################
+# 1) MODEL-LISTEN (nur Info, keine Modelldaten)
+############################################################
+
+echo "Erfasse Modell-Listen..." | tee -a "$LOG"
+
+echo "models:" > "${BACKUP_TMP}/model_manifest.yml"
+echo "  ollama: Docker-Modus (keine Modelldaten im Backup)" >> "${BACKUP_TMP}/model_manifest.yml"
+
+if [[ -d /opt/services/openwebui/models ]]; then
+    echo "  openwebui:" >> "${BACKUP_TMP}/model_manifest.yml"
+    ls /opt/services/openwebui/models | awk '{print "    - " $1}' >> "${BACKUP_TMP}/model_manifest.yml"
+else
+    echo "  openwebui: kein Modellordner" >> "${BACKUP_TMP}/model_manifest.yml"
+fi
+
+echo "ℹ️ Ollama läuft im Docker – Modelle werden NICHT im normalen Backup gesichert." | tee -a "$LOG"
+
+############################################################
+# 2) DOCKER VOLUME BACKUP
+############################################################
+
+echo "Starte Volume-Backup..." | tee -a "$LOG"
+
+VOLUMES=$(docker volume ls --format '{{.Name}}' | grep '^services_' || true)
+
+if [[ -z "$VOLUMES" ]]; then
+    echo "Keine passenden Docker-Volumes gefunden (services_*)." | tee -a "$LOG"
+else
+    for VOL in $VOLUMES; do
+        echo "  Volume: $VOL" | tee -a "$LOG"
+        ARCHIVE="${BACKUP_TMP}/volumes/${VOL}.tar.gz"
+
+        docker run --rm \
+            -v "${VOL}:/data:ro" \
+            -v "${BACKUP_TMP}/volumes:/out" \
+            alpine sh -c "cd /data && tar -czf /out/${VOL}.tar.gz ."
+
+        echo "    ✔ Gesichert: $ARCHIVE" | tee -a "$LOG"
+    done
+fi
+
+############################################################
+# 3) BIND-MOUNT BACKUP
+############################################################
+
+echo "Starte Bind-Mount-Backup..." | tee -a "$LOG"
+
 MOUNTS=(
     "/etc/caddy"
     "/opt/services"
@@ -49,51 +101,69 @@ MOUNTS=(
     "/var/lib/caddy"
 )
 
-for M in "${MOUNTS[@]}"; do
-    SAFE=$(echo "$M" | sed 's/\//_/g')
-    tar -czf "${TMP}/bind_mounts/${SAFE}.tar.gz" -C "$M" .
+for SRC in "${MOUNTS[@]}"; do
+    if [[ ! -d "$SRC" ]]; then
+        echo "  Überspringe (nicht vorhanden): $SRC" | tee -a "$LOG"
+        continue
+    fi
+
+    SAFE=$(echo "$SRC" | sed 's/\//_/g')
+    ARCHIVE="${BACKUP_TMP}/bind_mounts/${SAFE}.tar.gz"
+
+    echo "  Bind-Mount: $SRC" | tee -a "$LOG"
+
+    tar -czf "$ARCHIVE" -C "$SRC" .
+
+    echo "    ✔ Gesichert: $ARCHIVE" | tee -a "$LOG"
 done
 
-#################################
-### 4) Hashes + Manifest
-#################################
-find "$TMP" -type f -exec sha256sum {} \; > "${TMP}/hashes.sha256"
+############################################################
+# 4) HASH-BERECHNUNG
+############################################################
 
-cat <<EOF > "${TMP}/manifest.yml"
-backup: "$NAME"
-time: "$TS"
+HASHFILE="${BACKUP_TMP}/hashes.sha256"
+find "$BACKUP_TMP" -type f -exec sha256sum {} \; > "$HASHFILE"
+echo "✔ Hashes gespeichert unter: $HASHFILE" | tee -a "$LOG"
+
+############################################################
+# 5) MANIFEST ERZEUGEN
+############################################################
+
+MANIFEST="${BACKUP_TMP}/manifest.yml"
+
+cat <<EOF > "$MANIFEST"
+backup_name: "$BACKUP_NAME"
+timestamp: "$TIMESTAMP"
 host: "$(hostname)"
+ip: "$(hostname -I | awk '{print $1}')"
 volumes:
-$(echo "$VOLUMES" | sed 's/^/ - /')
+$(echo "$VOLUMES" | sed 's/^/  - /')
 bind_mounts:
-$(printf "%s\n" "${MOUNTS[@]}" | sed 's/^/ - /')
+$(printf "%s\n" "${MOUNTS[@]}" | sed 's/^/  - /')
 EOF
 
-#################################
-### 5) Upload
-#################################
-rclone copy "$TMP" "${REMOTE}:${RDIR}" -P
+echo "✔ Manifest erstellt: $MANIFEST" | tee -a "$LOG"
 
-#################################
-### 6) Telegram
-#################################
-END=$(date +%s)
-DUR=$((END-START))
+############################################################
+# 6) UPLOAD
+############################################################
 
-MSG="🟦 *Backup abgeschlossen*\n\n"
-MSG+="🗂 *Name:* ${NAME}\n"
-MSG+="🖥 *Server:* $(hostname)\n"
-MSG+="⏱ *Dauer:* ${DUR} Sekunden\n\n"
-MSG+="🔐 *Volumes:*\n"
-for VOL in $VOLUMES; do MSG+=" • \`${VOL}\`\n"; done
-MSG+="\n🧩 *Bind Mounts:*\n"
-for M in "${MOUNTS[@]}"; do MSG+=" • ${M}\n"; done
+echo "Starte Upload zu Nextcloud..." | tee -a "$LOG"
 
-send_telegram_message "$MSG"
+rclone copy "$BACKUP_TMP" "${REMOTE_NAME}:${REMOTE_DIR}" -P | tee -a "$LOG"
 
-#################################
-### 7) Cleanup
-#################################
-rm -rf "$TMP"
+echo "✔ Upload abgeschlossen." | tee -a "$LOG"
 
-echo "Backup fertig: $NAME"
+############################################################
+# 7) CLEANUP
+############################################################
+
+rm -rf "$BACKUP_TMP"
+
+echo "--------------------------------------------------------" | tee -a "$LOG"
+echo "Backup erfolgreich abgeschlossen!" | tee -a "$LOG"
+echo "Name: ${BACKUP_NAME}" | tee -a "$LOG"
+echo "Remote: ${REMOTE_NAME}:${REMOTE_DIR}" | tee -a "$LOG"
+echo "--------------------------------------------------------" | tee -a "$LOG"
+
+telegram "✅ Backup erfolgreich auf $(hostname) – ${BACKUP_NAME}"
