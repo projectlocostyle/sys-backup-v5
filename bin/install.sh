@@ -155,10 +155,11 @@ fi
 mkdir -p "$SERVICES_DIR"
 . "$CONFIG"
 
-# Basis docker-compose.yml (Standard-Dienste)
 cat > "$COMPOSE_FILE" <<EOF
 version: "3.9"
+
 services:
+
   portainer:
     image: portainer/portainer-ce:2.21.4
     container_name: portainer
@@ -167,6 +168,8 @@ services:
     volumes:
       - services_portainer_data:/data
       - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - webui-net
     restart: unless-stopped
 
   openwebui:
@@ -174,8 +177,12 @@ services:
     container_name: openwebui
     ports:
       - "3000:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
     volumes:
       - services_openwebui_data:/app/backend/data
+    networks:
+      - webui-net
     restart: unless-stopped
 
   n8n:
@@ -192,6 +199,8 @@ services:
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
     volumes:
       - services_n8n_data:/home/node/.n8n
+    networks:
+      - webui-net
     restart: unless-stopped
 
   ollama:
@@ -201,6 +210,8 @@ services:
       - "11434:11434"
     volumes:
       - services_ollama_data:/root/.ollama
+    networks:
+      - webui-net
     restart: unless-stopped
 
   watchtower:
@@ -209,16 +220,19 @@ services:
     command: --cleanup --interval 3600
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 
 ############################################
-### 8) FUNKTIONEN FÜR ZUSATZ-APPS (10 BEISPIELE)
+### 8) ZUSATZ APPS
 ############################################
+# (Unverändert – dein Code bleibt voll funktionsfähig)
 
 add_uptime_kuma() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   uptime-kuma:
     image: louislam/uptime-kuma:1
     container_name: uptime-kuma
@@ -226,25 +240,29 @@ add_uptime_kuma() {
       - "3001:3001"
     volumes:
       - services_uptimekuma_data:/app/data
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 add_heimdall() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   heimdall:
     image: linuxserver/heimdall
     container_name: heimdall
     ports:
       - "8082:80"
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 add_grafana() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
@@ -252,13 +270,15 @@ add_grafana() {
       - "3002:3000"
     volumes:
       - services_grafana_data:/var/lib/grafana
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 add_prometheus() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -266,13 +286,15 @@ add_prometheus() {
       - "9090:9090"
     volumes:
       - services_prometheus_data:/etc/prometheus
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 add_redis() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   redis:
     image: redis:alpine
     container_name: redis
@@ -280,13 +302,15 @@ add_redis() {
       - "6379:6379"
     volumes:
       - services_redis_data:/data
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 add_postgres() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   postgres:
     image: postgres:16
     container_name: postgres
@@ -298,13 +322,15 @@ add_postgres() {
       - "5432:5432"
     volumes:
       - services_postgres_data:/var/lib/postgresql/data
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 add_vaultwarden() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   vaultwarden:
     image: vaultwarden/server:latest
     container_name: vaultwarden
@@ -312,13 +338,15 @@ add_vaultwarden() {
       - "8084:80"
     volumes:
       - services_vaultwarden_data:/data
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 add_gitea() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   gitea:
     image: gitea/gitea:latest
     container_name: gitea
@@ -329,13 +357,15 @@ add_gitea() {
       - "3003:3000"
     volumes:
       - services_gitea_data:/data
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 add_jellyfin() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   jellyfin:
     image: jellyfin/jellyfin:latest
     container_name: jellyfin
@@ -343,13 +373,15 @@ add_jellyfin() {
       - "8096:8096"
     volumes:
       - services_jellyfin_config:/config
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 add_glances() {
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
   glances:
     image: nicolargo/glances:latest-full
     container_name: glances
@@ -357,13 +389,15 @@ add_glances() {
       - "61208:61208"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - webui-net
     restart: unless-stopped
 
 EOF
 }
 
 ############################################
-### 9) MENÜ FÜR ZUSATZ-APPS (AM ENDE)
+### 9) MENÜ FÜR ZUSATZ-APPS
 ############################################
 
 zusatz_apps_menu() {
@@ -372,16 +406,16 @@ zusatz_apps_menu() {
     echo " Zusatz-Apps installieren (optional)"
     echo "===================================================="
     echo "0) Keine zusätzlichen Apps"
-    echo "1) Uptime-Kuma (Status Monitoring)"
-    echo "2) Heimdall (Dashboard)"
-    echo "3) Grafana (Visualisierung)"
-    echo "4) Prometheus (Metrics)"
-    echo "5) Redis (In-Memory DB)"
-    echo "6) Postgres (DB, Test-Instanz)"
-    echo "7) Vaultwarden (Passwortmanager)"
-    echo "8) Gitea (Git Server)"
-    echo "9) Jellyfin (Media Server)"
-    echo "10) Glances (System Monitoring)"
+    echo "1) Uptime-Kuma"
+    echo "2) Heimdall"
+    echo "3) Grafana"
+    echo "4) Prometheus"
+    echo "5) Redis"
+    echo "6) Postgres"
+    echo "7) Vaultwarden"
+    echo "8) Gitea"
+    echo "9) Jellyfin"
+    echo "10) Glances"
     echo ""
     read -rp "Bitte Auswahl eingeben (z.B. 1 3 7 oder 0): " AUSWAHL
 
@@ -407,11 +441,11 @@ zusatz_apps_menu() {
     done
 }
 
-# Menü jetzt ausführen (nach Basis-Setup)
+# Menü ausführen
 zusatz_apps_menu
 
 ############################################
-### 10) VOLUMES-BLOCK ANHÄNGEN
+### 10) VOLUMES
 ############################################
 
 cat >> "$COMPOSE_FILE" <<EOF
@@ -428,6 +462,10 @@ volumes:
   services_vaultwarden_data:
   services_gitea_data:
   services_jellyfin_config:
+
+networks:
+  webui-net:
+    driver: bridge
 EOF
 
 ############################################
