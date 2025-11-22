@@ -1,42 +1,24 @@
 #!/bin/bash
-# Telegram Integration V2 – ultra-stabil
+# Zentraler Telegram-Sender für SYS-BACKUP-V5
 
-TELEGRAM_BOT_TOKEN="DEIN_BOT_TOKEN_HIER"
-TELEGRAM_CHAT_ID="DEINE_CHAT_ID_HIER"
+CONFIG="/etc/sys-backup-v5.conf"
 
-API_URL="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+if [[ -f "$CONFIG" ]]; then
+    # shellcheck disable=SC1090
+    . "$CONFIG"
+fi
 
-log_msg() {
-    echo "[telegram] $1"
-}
+if [[ "${TELEGRAM_ENABLED:-no}" != "yes" ]]; then
+    exit 0
+fi
 
-send_telegram_message() {
-    local MESSAGE="$1"
-    local RETRIES=5
-    local DELAY=2
+TEXT="$*"
 
-    SAFE_MSG=$(echo "$MESSAGE" | sed 's/"/\\"/g')
+if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]] || [[ -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+    exit 0
+fi
 
-    for ((i=1; i<=RETRIES; i++)); do
-        RESPONSE=$(curl -s -X POST "$API_URL" \
-            -d chat_id="$TELEGRAM_CHAT_ID" \
-            -d parse_mode="MarkdownV2" \
-            --data-urlencode "text=$SAFE_MSG")
-
-        if echo "$RESPONSE" | grep -q '"ok":true'; then
-            log_msg "Telegram OK"
-            return 0
-        fi
-
-        log_msg "⚠ Fehler ($i): $RESPONSE"
-        sleep $DELAY
-        DELAY=$((DELAY * 2))
-    done
-
-    log_msg "❌ Telegram endgültig fehlgeschlagen"
-    return 1
-}
-
-telegram_test() {
-    send_telegram_message "🟢 *Telegram OK* – Testnachricht empfangen."
-}
+curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    -d chat_id="${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=${TEXT}" \
+    >/dev/null 2>&1 || true
