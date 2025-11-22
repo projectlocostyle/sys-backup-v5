@@ -1,290 +1,169 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "===================================================="
-echo "  SYS-BACKUP-V5 – INSTALLATION (Wizard & Cloud)"
-echo "===================================================="
+############################################################
+# SYS-BACKUP-V5 – BACKUP SCRIPT
+############################################################
 
 CONFIG="/etc/sys-backup-v5.conf"
+BASE="/opt/sys-backup-v5"
 LOG_DIR="/var/log/sys-backup-v5"
-SERVICES_DIR="/opt/services"
-COMPOSE_FILE="${SERVICES_DIR}/docker-compose.yml"
-
-# Nextcloud Defaults
-NC_URL_DEFAULT="https://nextcloud.r-server.ch/remote.php/dav/files/backup/"
-NC_USER_DEFAULT="backup"
-REMOTE_NAME_DEFAULT="backup"
-REMOTE_BACKUP_DIR_DEFAULT="Server-Backups"
+TMP_BASE="/tmp/sys-backup-v5"
 
 mkdir -p "$LOG_DIR"
+mkdir -p "$TMP_BASE"
 
-############################################
-### 1) WIZARD: BASISDATEN ABFRAGEN
-############################################
+if [[ -f "$CONFIG" ]]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG"
+fi
 
-echo ""
-echo ">>> Basis-Konfiguration (Wizard)"
+REMOTE_NAME="${REMOTE_NAME:-backup}"
+REMOTE_DIR_BASE="${REMOTE_DIR:-Server-Backups}"
 
-read -p "Base-Domain (z.B. ai.locostyle.ch): " BASE_DOMAIN
-BASE_DOMAIN="${BASE_DOMAIN:-ai.locostyle.ch}"
+TIMESTAMP="$(date +%Y-%m-%d_%H-%M-%S)"
+BACKUP_NAME="backup_${TIMESTAMP}"
 
-echo ""
-echo "Nextcloud / rclone:"
-read -p "Nextcloud URL [${NC_URL_DEFAULT}]: " NC_URL
-NC_URL="${NC_URL:-$NC_URL_DEFAULT}"
+BACKUP_TMP="${TMP_BASE}/${BACKUP_NAME}"
+REMOTE_DIR="${REMOTE_DIR_BASE}/${BACKUP_NAME}"
 
-read -p "Nextcloud User [${NC_USER_DEFAULT}]: " NC_USER
-NC_USER="${NC_USER:-$NC_USER_DEFAULT}"
+mkdir -p "$BACKUP_TMP/volumes"
+mkdir -p "$BACKUP_TMP/bind_mounts"
 
-read -p "rclone Remote-Name [${REMOTE_NAME_DEFAULT}]: " REMOTE_NAME
-REMOTE_NAME="${REMOTE_NAME:-$REMOTE_NAME_DEFAULT}"
+LOG="${LOG_DIR}/backup.log"
 
-read -p "Remote Backup Ordner [${REMOTE_BACKUP_DIR_DEFAULT}]: " REMOTE_BACKUP_DIR
-REMOTE_BACKUP_DIR="${REMOTE_BACKUP_DIR:-$REMOTE_BACKUP_DIR_DEFAULT}"
+telegram() {
+    if [[ -x "${BASE}/bin/telegram.sh" ]]; then
+        "${BASE}/bin/telegram.sh" "$*"
+    fi
+}
 
-echo ""
-read -s -p "Nextcloud Passwort: " NC_PASS
-echo ""
+trap 'telegram "❌ Backup fehlgeschlagen auf $(hostname) um $(date)"' ERR
 
-echo ""
-echo "Telegram-Benachrichtigungen?"
-read -p "Aktivieren? (y/N): " TG_EN
-TG_EN="${TG_EN:-n}"
+echo "--------------------------------------------------------" | tee "$LOG"
+echo "SYS-BACKUP-V5 BACKUP gestartet: ${TIMESTAMP}" | tee -a "$LOG"
+echo "--------------------------------------------------------" | tee -a "$LOG"
+echo "" | tee -a "$LOG"
 
-if [[ "${TG_EN,,}" == "y" ]]; then
-    TELEGRAM_ENABLED="yes"
-    read -p "Telegram Chat-ID: " TELEGRAM_CHAT_ID
-    read -s -p "Telegram Bot Token: " TELEGRAM_BOT_TOKEN
-    echo ""
+############################################################
+# 1) MODEL-LISTEN (nur Info, keine Modelldaten)
+############################################################
+
+echo "Erfasse Modell-Listen..." | tee -a "$LOG"
+
+echo "models:" > "${BACKUP_TMP}/model_manifest.yml"
+echo "  ollama: Docker-Modus (keine Modelldaten im Backup)" >> "${BACKUP_TMP}/model_manifest.yml"
+
+if [[ -d /opt/services/openwebui/models ]]; then
+    echo "  openwebui:" >> "${BACKUP_TMP}/model_manifest.yml"
+    ls /opt/services/openwebui/models | awk '{print "    - " $1}' >> "${BACKUP_TMP}/model_manifest.yml"
 else
-    TELEGRAM_ENABLED="no"
-    TELEGRAM_CHAT_ID=""
-    TELEGRAM_BOT_TOKEN=""
+    echo "  openwebui: kein Modellordner" >> "${BACKUP_TMP}/model_manifest.yml"
 fi
 
-if command -v openssl >/dev/null 2>&1; then
-    N8N_ENCRYPTION_KEY="$(openssl rand -hex 32)"\else
-    N8N_ENCRYPTION_KEY="$(head -c 32 /dev/urandom | base64)"
+echo "ℹ️ Ollama läuft im Docker – Modelle werden NICHT im normalen Backup gesichert." | tee -a "$LOG"
+
+############################################################
+# 2) DOCKER VOLUME BACKUP
+############################################################
+
+echo "Starte Volume-Backup..." | tee -a "$LOG"
+
+VOLUMES=$(docker volume ls --format '{{.Name}}' | grep '^services_' || true)
+
+if [[ -z "$VOLUMES" ]]; then
+    echo "Keine passenden Docker-Volumes gefunden (services_*)." | tee -a "$LOG"
+else
+    for VOL in $VOLUMES; do
+        echo "  Volume: $VOL" | tee -a "$LOG"
+        ARCHIVE="${BACKUP_TMP}/volumes/${VOL}.tar.gz"
+
+        docker run --rm \
+            -v "${VOL}:/data:ro" \
+            -v "${BACKUP_TMP}/volumes:/out" \
+            alpine sh -c "cd /data && tar -czf /out/${VOL}.tar.gz ."
+
+        echo "    ✔ Gesichert: $ARCHIVE" | tee -a "$LOG"
+    done
 fi
 
-N8N_DOMAIN="n8n.${BASE_DOMAIN}"
-PORTAINER_DOMAIN="portainer.${BASE_DOMAIN}"
-OLLAMA_DOMAIN="ollama.${BASE_DOMAIN}"
-OPENWEBUI_DOMAIN="openwebui.${BASE_DOMAIN}"
+############################################################
+# 3) BIND-MOUNT BACKUP
+############################################################
 
-############################################
-### 2) CONFIG-FILE SCHREIBEN
-############################################
+echo "Starte Bind-Mount-Backup..." | tee -a "$LOG"
 
-cat > "$CONFIG" <<EOF
-BASE_DOMAIN="$BASE_DOMAIN"
-N8N_DOMAIN="$N8N_DOMAIN"
-PORTAINER_DOMAIN="$PORTAINER_DOMAIN"
-OLLAMA_DOMAIN="$OLLAMA_DOMAIN"
-OPENWEBUI_DOMAIN="$OPENWEBUI_DOMAIN"
-REMOTE_NAME="$REMOTE_NAME"
-REMOTE_DIR="$REMOTE_BACKUP_DIR"
-NC_URL="$NC_URL"
-NC_USER="$NC_USER"
-TELEGRAM_ENABLED="$TELEGRAM_ENABLED"
-TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
-TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
-N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY"
-EOF
+MOUNTS=(
+    "/etc/caddy"
+    "/opt/services"
+    "/opt/sys-backup-v5"
+    "/root/.config/rclone"
+    "/var/lib/caddy"
+)
 
-echo ""
-echo "✔ Konfiguration geschrieben nach: $CONFIG"
+for SRC in "${MOUNTS[@]}"; do
+    if [[ ! -d "$SRC" ]]; then
+        echo "  Überspringe (nicht vorhanden): $SRC" | tee -a "$LOG"
+        continue
+    fi
 
-############################################
-### 3) SYSTEM UPDATES & TOOLS
-############################################
+    SAFE=$(echo "$SRC" | sed 's/\//_/g')
+    ARCHIVE="${BACKUP_TMP}/bind_mounts/${SAFE}.tar.gz"
 
-apt update -y
-apt install -y curl git unzip ca-certificates gnupg lsb-release rclone
+    echo "  Bind-Mount: $SRC" | tee -a "$LOG"
 
-############################################
-### 4) DOCKER & DOCKER COMPOSE
-############################################
+    tar -czf "$ARCHIVE" -C "$SRC" .
 
-echo "[2/5] Docker prüfen..."
-if ! command -v docker &> /dev/null; then
-    curl -fsSL https://get.docker.com | sh
-fi
+    echo "    ✔ Gesichert: $ARCHIVE" | tee -a "$LOG"
+done
 
-echo "[3/5] docker compose prüfen..."
-if ! docker compose version &> /dev/null; then
-    LATEST_COMPOSE=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep browser_download_url | grep linux-x86_64 | cut -d '"' -f 4)
-    curl -L "$LATEST_COMPOSE" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-fi
+############################################################
+# 4) HASH-BERECHNUNG
+############################################################
 
-############################################
-### 5) CADDY INSTALLATION
-############################################
+HASHFILE="${BACKUP_TMP}/hashes.sha256"
+find "$BACKUP_TMP" -type f -exec sha256sum {} \; > "$HASHFILE"
+echo "✔ Hashes gespeichert unter: $HASHFILE" | tee -a "$LOG"
 
-if ! command -v caddy &> /dev/null; then
-    apt install -y debian-keyring debian-archive-keyring apt-transport-https
-    curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy.gpg
-    echo "deb [signed-by=/usr/share/keyrings/caddy.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy.list
-    apt update
-    apt install -y caddy
-fi
+############################################################
+# 5) MANIFEST ERZEUGEN
+############################################################
 
-systemctl enable caddy
-systemctl restart caddy
+MANIFEST="${BACKUP_TMP}/manifest.yml"
 
-############################################
-### 6) RCLONE REMOTE EINRICHTEN
-############################################
-
-if ! rclone listremotes | grep -q "^${REMOTE_NAME}:"; then
-    rclone config create "$REMOTE_NAME" webdav url="$NC_URL" vendor="nextcloud" user="$NC_USER" pass="$NC_PASS" --non-interactive
-fi
-
-# Verbindung testen
-if ! rclone ls "${REMOTE_NAME}:${REMOTE_BACKUP_DIR}" >/dev/null 2>&1; then
-    rclone mkdir "${REMOTE_NAME}:${REMOTE_BACKUP_DIR}"
-fi
-
-############################################
-### 7) DOCKER-COMPOSE
-############################################
-
-mkdir -p "$SERVICES_DIR"
-. "$CONFIG"
-
-cat > "$COMPOSE_FILE" <<EOF
-version: "3.9"
-services:
-  portainer:
-    image: portainer/portainer-ce:2.21.4
-    container_name: portainer
-    ports:
-      - "9000:9000"
-    volumes:
-      - services_portainer_data:/data
-      - /var/run/docker.sock:/var/run/docker.sock
-
-  openwebui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: openwebui
-    ports:
-      - "3000:8080"
-    volumes:
-      - services_openwebui_data:/app/backend/data
-
-  n8n:
-    image: docker.n8n.io/n8nio/n8n
-    container_name: n8n
-    ports:
-      - "5678:5678"
-    environment:
-      - N8N_HOST=${N8N_DOMAIN}
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=https
-      - N8N_EDITOR_BASE_URL=https://${N8N_DOMAIN}
-      - WEBHOOK_URL=https://${N8N_DOMAIN}
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
-    volumes:
-      - services_n8n_data:/home/node/.n8n
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - services_ollama_data:/root/.ollama
-
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
-    command: --cleanup --interval 3600
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-
+cat <<EOF > "$MANIFEST"
+backup_name: "$BACKUP_NAME"
+timestamp: "$TIMESTAMP"
+host: "$(hostname)"
+ip: "$(hostname -I | awk '{print $1}')"
 volumes:
-  services_portainer_data:
-  services_openwebui_data:
-  services_n8n_data:
-  services_ollama_data:
+$(echo "$VOLUMES" | sed 's/^/  - /')
+bind_mounts:
+$(printf "%s\n" "${MOUNTS[@]}" | sed 's/^/  - /')
 EOF
 
-############################################
-### 8) CADDYFILE
-############################################
+echo "✔ Manifest erstellt: $MANIFEST" | tee -a "$LOG"
 
-cat > /etc/caddy/Caddyfile <<EOF
-{
-    email admin@${BASE_DOMAIN}
-}
+############################################################
+# 6) UPLOAD
+############################################################
 
-${BASE_DOMAIN} {
-    respond "OK - ${BASE_DOMAIN} läuft"
-}
+echo "Starte Upload zu Nextcloud..." | tee -a "$LOG"
 
-n8n.${BASE_DOMAIN} {
-    reverse_proxy localhost:5678
-}
+rclone copy "$BACKUP_TMP" "${REMOTE_NAME}:${REMOTE_DIR}" -P | tee -a "$LOG"
 
-portainer.${BASE_DOMAIN} {
-    reverse_proxy localhost:9000
-}
+echo "✔ Upload abgeschlossen." | tee -a "$LOG"
 
-ollama.${BASE_DOMAIN} {
-    reverse_proxy localhost:11434
-}
+############################################################
+# 7) CLEANUP
+############################################################
 
-openwebui.${BASE_DOMAIN} {
-    reverse_proxy localhost:3000
-}
-EOF
+rm -rf "$BACKUP_TMP"
 
-systemctl reload caddy || systemctl restart caddy
+echo "--------------------------------------------------------" | tee -a "$LOG"
+echo "Backup erfolgreich abgeschlossen!" | tee -a "$LOG"
+echo "Name: ${BACKUP_NAME}" | tee -a "$LOG"
+echo "Remote: ${REMOTE_NAME}:${REMOTE_DIR}" | tee -a "$LOG"
+echo "--------------------------------------------------------" | tee -a "$LOG"
 
-############################################
-### 9) DOCKER STARTEN
-############################################
-
-docker compose -f "$COMPOSE_FILE" up -d
-
-############################################
-### 10) TELEGRAM
-
-if [[ "$TELEGRAM_ENABLED" == "yes" ]]; then
-    INSTALL_TS="$(date '+%d.%m.%Y %H:%M:%S')"
-    SERVER="$(hostname)"
-
-    TELEGRAM_MESSAGE="$(cat <<EOF
-✅ Installation erfolgreich
-
-🖥 Server: ${SERVER}
-🌐 Domain: ${BASE_DOMAIN}
-⏱ Zeitpunkt: ${INSTALL_TS}
-
-📦 Installierte Dienste:
- - Portainer
- - OpenWebUI
- - N8N
- - Ollama
- - Watchtower
-
-🧩 Details:
- - Portainer (Docker GUI)
- - OpenWebUI (Web-KI Oberfläche)
- - n8n (Automationen)
- - Ollama (lokale KI Engine)
- - Watchtower (Container Updates)
-EOF
-)"
-
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-         -d chat_id="${TELEGRAM_CHAT_ID}" \
-         -d parse_mode="Markdown" \
-         --data-urlencode "text=${TELEGRAM_MESSAGE}" >/dev/null
-fi
-
-echo "===================================================="
-echo " Installation abgeschlossen!"
-echo "====================================================""
-echo "===================================================="
+telegram "✅ Backup erfolgreich auf $(hostname) – ${BACKUP_NAME}"
