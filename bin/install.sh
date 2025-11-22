@@ -250,31 +250,41 @@ docker compose -f "$COMPOSE_FILE" up -d
 
 ############################################
 ### 10) TELEGRAM
-############################################
 
 if [[ "$TELEGRAM_ENABLED" == "yes" ]]; then
-    MESSAGE="$(cat <<EOF
-🚀 *SYS-BACKUP-V5 Installation abgeschlossen*
+    INSTALL_TS="$(date '+%d.%m.%Y %H:%M:%S')"
+    SERVER="$(hostname)"
 
-🖥 Server: $(hostname)
+    TELEGRAM_MESSAGE="$(cat <<EOF
+✅ Installation erfolgreich
+
+🖥 Server: ${SERVER}
 🌐 Domain: ${BASE_DOMAIN}
-📦 Dienste installiert:
+⏱ Zeitpunkt: ${INSTALL_TS}
+
+📦 Installierte Dienste:
  - Portainer
  - OpenWebUI
  - N8N
  - Ollama
  - Watchtower
 
-📅 Zeitpunkt: $(date '+%d.%m.%Y %H:%M:%S')
+🧩 Details:
+ - Portainer (Docker GUI)
+ - OpenWebUI (Web-KI Oberfläche)
+ - n8n (Automationen)
+ - Ollama (lokale KI Engine)
+ - Watchtower (Container Updates)
 EOF
 )"
 
     curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
          -d chat_id="${TELEGRAM_CHAT_ID}" \
          -d parse_mode="Markdown" \
-         -d text="${MESSAGE}" >/dev/null
+         --data-urlencode "text=${TELEGRAM_MESSAGE}" >/dev/null
 fi
 
 echo "===================================================="
 echo " Installation abgeschlossen!"
+echo "====================================================""
 echo "===================================================="
