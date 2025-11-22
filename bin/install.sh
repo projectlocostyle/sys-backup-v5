@@ -62,8 +62,10 @@ else
     TELEGRAM_BOT_TOKEN=""
 fi
 
+# N8N Encryption Key generieren
 if command -v openssl >/dev/null 2>&1; then
-    N8N_ENCRYPTION_KEY="$(openssl rand -hex 32)"\else
+    N8N_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+else
     N8N_ENCRYPTION_KEY="$(head -c 32 /dev/urandom | base64)"
 fi
 
@@ -147,12 +149,13 @@ if ! rclone ls "${REMOTE_NAME}:${REMOTE_BACKUP_DIR}" >/dev/null 2>&1; then
 fi
 
 ############################################
-### 7) DOCKER-COMPOSE
+### 7) DOCKER-COMPOSE BASIS
 ############################################
 
 mkdir -p "$SERVICES_DIR"
 . "$CONFIG"
 
+# Basis docker-compose.yml (Standard-Dienste)
 cat > "$COMPOSE_FILE" <<EOF
 version: "3.9"
 services:
@@ -164,6 +167,7 @@ services:
     volumes:
       - services_portainer_data:/data
       - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
 
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
@@ -172,6 +176,7 @@ services:
       - "3000:8080"
     volumes:
       - services_openwebui_data:/app/backend/data
+    restart: unless-stopped
 
   n8n:
     image: docker.n8n.io/n8nio/n8n
@@ -187,6 +192,7 @@ services:
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
     volumes:
       - services_n8n_data:/home/node/.n8n
+    restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest
@@ -195,6 +201,7 @@ services:
       - "11434:11434"
     volumes:
       - services_ollama_data:/root/.ollama
+    restart: unless-stopped
 
   watchtower:
     image: containrrr/watchtower
@@ -202,16 +209,229 @@ services:
     command: --cleanup --interval 3600
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
 
+EOF
+
+############################################
+### 8) FUNKTIONEN FÜR ZUSATZ-APPS (10 BEISPIELE)
+############################################
+
+add_uptime_kuma() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    ports:
+      - "3001:3001"
+    volumes:
+      - services_uptimekuma_data:/app/data
+    restart: unless-stopped
+
+EOF
+}
+
+add_heimdall() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  heimdall:
+    image: linuxserver/heimdall
+    container_name: heimdall
+    ports:
+      - "8082:80"
+    restart: unless-stopped
+
+EOF
+}
+
+add_grafana() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3002:3000"
+    volumes:
+      - services_grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+EOF
+}
+
+add_prometheus() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - services_prometheus_data:/etc/prometheus
+    restart: unless-stopped
+
+EOF
+}
+
+add_redis() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  redis:
+    image: redis:alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - services_redis_data:/data
+    restart: unless-stopped
+
+EOF
+}
+
+add_postgres() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=changeme
+      - POSTGRES_DB=appdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - services_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+EOF
+}
+
+add_vaultwarden() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    ports:
+      - "8084:80"
+    volumes:
+      - services_vaultwarden_data:/data
+    restart: unless-stopped
+
+EOF
+}
+
+add_gitea() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+    ports:
+      - "3003:3000"
+    volumes:
+      - services_gitea_data:/data
+    restart: unless-stopped
+
+EOF
+}
+
+add_jellyfin() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    ports:
+      - "8096:8096"
+    volumes:
+      - services_jellyfin_config:/config
+    restart: unless-stopped
+
+EOF
+}
+
+add_glances() {
+  cat >> "$COMPOSE_FILE" <<EOF
+  glances:
+    image: nicolargo/glances:latest-full
+    container_name: glances
+    ports:
+      - "61208:61208"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+EOF
+}
+
+############################################
+### 9) MENÜ FÜR ZUSATZ-APPS (AM ENDE)
+############################################
+
+zusatz_apps_menu() {
+    echo ""
+    echo "===================================================="
+    echo " Zusatz-Apps installieren (optional)"
+    echo "===================================================="
+    echo "0) Keine zusätzlichen Apps"
+    echo "1) Uptime-Kuma (Status Monitoring)"
+    echo "2) Heimdall (Dashboard)"
+    echo "3) Grafana (Visualisierung)"
+    echo "4) Prometheus (Metrics)"
+    echo "5) Redis (In-Memory DB)"
+    echo "6) Postgres (DB, Test-Instanz)"
+    echo "7) Vaultwarden (Passwortmanager)"
+    echo "8) Gitea (Git Server)"
+    echo "9) Jellyfin (Media Server)"
+    echo "10) Glances (System Monitoring)"
+    echo ""
+    read -rp "Bitte Auswahl eingeben (z.B. 1 3 7 oder 0): " AUSWAHL
+
+    if [[ "$AUSWAHL" == "0" || -z "$AUSWAHL" ]]; then
+        echo "Keine Zusatz-Apps ausgewählt."
+        return
+    fi
+
+    for app in $AUSWAHL; do
+        case "$app" in
+            1) add_uptime_kuma ;;
+            2) add_heimdall ;;
+            3) add_grafana ;;
+            4) add_prometheus ;;
+            5) add_redis ;;
+            6) add_postgres ;;
+            7) add_vaultwarden ;;
+            8) add_gitea ;;
+            9) add_jellyfin ;;
+            10) add_glances ;;
+            *) echo "Ungültige Auswahl: $app" ;;
+        esac
+    done
+}
+
+# Menü jetzt ausführen (nach Basis-Setup)
+zusatz_apps_menu
+
+############################################
+### 10) VOLUMES-BLOCK ANHÄNGEN
+############################################
+
+cat >> "$COMPOSE_FILE" <<EOF
 volumes:
   services_portainer_data:
   services_openwebui_data:
   services_n8n_data:
   services_ollama_data:
+  services_uptimekuma_data:
+  services_grafana_data:
+  services_prometheus_data:
+  services_redis_data:
+  services_postgres_data:
+  services_vaultwarden_data:
+  services_gitea_data:
+  services_jellyfin_config:
 EOF
 
 ############################################
-### 8) CADDYFILE
+### 11) CADDYFILE
 ############################################
 
 cat > /etc/caddy/Caddyfile <<EOF
@@ -243,13 +463,14 @@ EOF
 systemctl reload caddy || systemctl restart caddy
 
 ############################################
-### 9) DOCKER STARTEN
+### 12) DOCKER STARTEN
 ############################################
 
 docker compose -f "$COMPOSE_FILE" up -d
 
 ############################################
-### 10) TELEGRAM
+### 13) TELEGRAM
+############################################
 
 if [[ "$TELEGRAM_ENABLED" == "yes" ]]; then
     INSTALL_TS="$(date '+%d.%m.%Y %H:%M:%S')"
@@ -262,19 +483,15 @@ if [[ "$TELEGRAM_ENABLED" == "yes" ]]; then
 🌐 Domain: ${BASE_DOMAIN}
 ⏱ Zeitpunkt: ${INSTALL_TS}
 
-📦 Installierte Dienste:
+📦 Installierte Basis-Dienste:
  - Portainer
  - OpenWebUI
  - N8N
  - Ollama
  - Watchtower
 
-🧩 Details:
- - Portainer (Docker GUI)
- - OpenWebUI (Web-KI Oberfläche)
- - n8n (Automationen)
- - Ollama (lokale KI Engine)
- - Watchtower (Container Updates)
+ℹ️ Zusatz-Apps: siehe docker-compose.yml
+
 EOF
 )"
 
@@ -286,5 +503,4 @@ fi
 
 echo "===================================================="
 echo " Installation abgeschlossen!"
-echo "====================================================""
 echo "===================================================="
