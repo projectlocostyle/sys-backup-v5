@@ -1,25 +1,24 @@
 #!/bin/bash
-set -euo pipefail
+# Zentraler Telegram-Sender für SYS-BACKUP-V5
 
-CONF="/etc/sys-backup-v5/telegram.conf"
+CONFIG="/etc/sys-backup-v5.conf"
 
-if [[ ! -f "$CONF" ]]; then
-  exit 0
+if [[ -f "$CONFIG" ]]; then
+    # shellcheck disable=SC1090
+    . "$CONFIG"
 fi
 
-# shellcheck disable=SC1090
-source "$CONF"
-
-if [[ -z "${TELEGRAM_CHAT_ID:-}" || -z "${TELEGRAM_BOT_TOKEN:-}" ]]; then
-  exit 0
+if [[ "${TELEGRAM_ENABLED:-no}" != "yes" ]]; then
+    exit 0
 fi
 
-MESSAGE="${1:-}"
-if [[ -z "$MESSAGE" ]]; then
-  exit 0
+TEXT="$*"
+
+if [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]] || [[ -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+    exit 0
 fi
 
 curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-  -d chat_id="${TELEGRAM_CHAT_ID}" \
-  -d text="$MESSAGE" \
-  -d parse_mode="Markdown" >/dev/null 2>&1 || exit 0
+    -d chat_id="${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=${TEXT}" \
+    >/dev/null 2>&1 || true
