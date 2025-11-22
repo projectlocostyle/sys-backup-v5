@@ -168,10 +168,40 @@ echo ""
 echo "Caddy reload..."
 systemctl reload caddy || true
 
-echo ""
 echo "--------------------------------------------------------"
 echo " RESTORE ERFOLGREICH!"
 echo " Backup: $SELECTED"
 echo "--------------------------------------------------------"
 
-telegram "✅ Restore erfolgreich auf $(hostname) – Backup: ${SELECTED}"
+# Dauer berechnen (bash-Variable SECONDS zählt seit Skriptstart)
+DURATION_SECONDS=${SECONDS:-0}
+printf -v DURATION "%02d:%02d:%02d" \
+    $((DURATION_SECONDS / 3600)) \
+    $(((DURATION_SECONDS % 3600) / 60)) \
+    $((DURATION_SECONDS % 60))
+
+TIMESTAMP="$(date '+%d.%m.%Y %H:%M:%S')"
+SERVER="$(hostname)"
+
+telegram "$(cat <<EOF
+✅ Restore erfolgreich
+
+🗂 Backup: ${SELECTED}
+🖥 Server: ${SERVER}
+🔧 Modus: Komplettes Restore
+⏱ Dauer: ${DURATION}
+📅 Zeitpunkt: ${TIMESTAMP}
+
+🔁 Wiederhergestellt:
+ - n8n Daten
+ - Datenbank
+ - Portainer
+ - Caddy
+
+🧩 Details:
+ - n8n Daten (Volume: n8n_n8n_data)
+ - Datenbank (Volume: n8n_postgres_data)
+ - Portainer (Volume: portainer_data)
+ - Caddy (Caddyfile, config/, data/)
+EOF
+)"
